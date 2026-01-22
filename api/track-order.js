@@ -14,7 +14,7 @@ module.exports = async (req, res) => {
     // -------------------------------------------------
     // 2. Config (FIXED)
     // -------------------------------------------------
-    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://api.wareiq.in';
+    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://webapp.wareiq.com';
     const API_TOKEN = process.env.WAREIQ_API_TOKEN;
   
     if (!API_TOKEN) {
