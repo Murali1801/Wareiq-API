@@ -1,8 +1,5 @@
 {
     "name": "wareiq-tracking-middleware",
     "version": "1.0.0",
-    "main": "api/track-order.js",
-    "dependencies": {
-      "axios": "0.27.2"
-    }
+    "main": "api/track-order.js"
 }
