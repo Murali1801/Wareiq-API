@@ -1,0 +1,9 @@
+{
+    "name": "wareiq-tracking-middleware",
+    "version": "1.0.0",
+    "description": "Secure middleware to fetch WareIQ tracking details for Shopify",
+    "main": "api/track-order.js",
+    "dependencies": {
+      "axios": "^1.6.0"
+    }
+  }
