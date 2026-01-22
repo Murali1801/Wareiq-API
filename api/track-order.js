@@ -1,8 +1,7 @@
-// api/track-order.js
-
 module.exports = async (req, res) => {
     // ---------------------------------------------------------
-    // 1. CORS Headers (Allows Shopify to talk to this backend)
+    // 1. CORS HEADERS
+    // Allows your Shopify store to talk to this backend safely
     // ---------------------------------------------------------
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*'); 
@@ -10,24 +9,18 @@ module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
   
     // Handle browser "Preflight" checks
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
+    if (req.method === 'OPTIONS') return res.status(200).end();
   
     // ---------------------------------------------------------
-    // 2. Configuration & Input
+    // 2. CONFIGURATION
     // ---------------------------------------------------------
-    
-    // CRITICAL: You must replace this with the real URL from your WareIQ Dashboard -> API Settings.
-    // The documentation you shared lists it as {{base_url}}. 
-    // It is likely "https://gateway.wareiq.com" or similar.
-    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://gateway.wareiq.com'; 
-    
+    // We found this URL in your Network Tab screenshot
+    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://track.wareiq.com'; 
     const API_TOKEN = process.env.WAREIQ_API_TOKEN;
   
-    // Check if secrets are loaded
+    // Validation: Ensure the API Token is set in Vercel
     if (!API_TOKEN) {
-      console.error("Server Error: WAREIQ_API_TOKEN is missing.");
+      console.error("Server Error: WAREIQ_API_TOKEN is missing in Vercel Settings.");
       return res.status(500).json({ error: 'Server Configuration Error' });
     }
   
@@ -38,26 +31,23 @@ module.exports = async (req, res) => {
     }
   
     // ---------------------------------------------------------
-    // 3. Main Logic (Using standard 'fetch')
+    // 3. MAIN LOGIC
     // ---------------------------------------------------------
     try {
-      let response;
       let endpoint;
       
-      // BASED ON YOUR DOCS: "GET Track an order"
-      // We assume the standard WareIQ path below. 
-      // If this fails (404), check your Postman for the exact path like '/shipping/v1/track'
-      
+      // Construct the URL based on the input
+      // We assume the standard path is /orders/v1/tracking based on typical WareIQ docs.
+      // If this specific path fails, try '/fc/v1/orders/search' instead.
       if (awb) {
-        // Construction: BASE_URL + Path + Query Params
-        endpoint = `${BASE_URL}/orders/v1/tracking?awb=${awb}`; 
+        endpoint = `${BASE_URL}/orders/v1/tracking?awb=${awb}`;
       } else {
         endpoint = `${BASE_URL}/orders/v1/tracking?order_id=${orderId}`;
       }
   
-      // Perform the Request
-      const apiRequest = await fetch(endpoint, {
-        method: 'GET', // Docs said "GET" for tracking
+      // Send the Request using standard 'fetch'
+      const response = await fetch(endpoint, {
+        method: 'GET',
         headers: {
           'Authorization': `Bearer ${API_TOKEN}`,
           'Content-Type': 'application/json'
@@ -65,22 +55,22 @@ module.exports = async (req, res) => {
       });
   
       // ---------------------------------------------------------
-      // 4. Error Handling
+      // 4. ERROR HANDLING
       // ---------------------------------------------------------
-      if (!apiRequest.ok) {
-        const errorText = await apiRequest.text();
-        console.error(`WareIQ API Error (${apiRequest.status}):`, errorText);
-  
-        if (apiRequest.status === 404) {
-          return res.status(404).json({ error: 'Shipment not found.' });
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`WareIQ API Error (${response.status}) at ${endpoint}:`, errorText);
+        
+        if (response.status === 404) {
+          return res.status(404).json({ error: 'Shipment not found. Please check your details.' });
         }
         return res.status(500).json({ error: 'Failed to fetch data from WareIQ.' });
       }
   
-      const data = await apiRequest.json();
+      const data = await response.json();
   
       // ---------------------------------------------------------
-      // 5. Security Check (Mobile Verification)
+      // 5. SECURITY CHECK (MOBILE VERIFICATION)
       // ---------------------------------------------------------
       if (orderId) {
         if (!mobile) {
@@ -88,9 +78,9 @@ module.exports = async (req, res) => {
         }
   
         // Check phone in likely fields (Customer or Shipping)
-        // Note: Adjust 'customer_details' if your specific API response uses 'shipping_address'
         const orderPhone = data.customer_details?.phone || data.shipping_address?.phone || '';
-  
+        
+        // Clean numbers (remove +91, spaces, dashes) to compare just the last 10 digits
         const cleanInput = String(mobile).replace(/\D/g, '').slice(-10);
         const cleanActual = String(orderPhone).replace(/\D/g, '').slice(-10);
   
@@ -100,7 +90,7 @@ module.exports = async (req, res) => {
       }
   
       // ---------------------------------------------------------
-      // 6. Success Response
+      // 6. SUCCESS RESPONSE
       // ---------------------------------------------------------
       return res.status(200).json({
         order_id: data.order_id || orderId,
@@ -109,8 +99,7 @@ module.exports = async (req, res) => {
       });
   
     } catch (error) {
-      // This catches the "ENOTFOUND" if the URL is still wrong
-      console.error('System Error:', error.message);
+      console.error('System Crash:', error.message);
       return res.status(500).json({ error: 'Tracking unavailable (System Error).' });
     }
   };
