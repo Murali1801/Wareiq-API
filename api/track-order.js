@@ -7,72 +7,94 @@ module.exports = async (req, res) => {
   
     if (req.method === 'OPTIONS') return res.status(200).end();
   
-    // 2. Configuration Logging
-    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://gateway.wareiq.com'; 
+    // 2. Configuration
+    // Uses the domain you found: https://track.wareiq.com
+    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://track.wareiq.com'; 
     const API_TOKEN = process.env.WAREIQ_API_TOKEN;
   
-    console.log("--- STARTING REQUEST ---");
-    console.log(`Configured BASE_URL: ${BASE_URL}`);
-    console.log(`API Token Present: ${API_TOKEN ? 'YES' : 'NO'}`);
-  
     if (!API_TOKEN) {
-      console.error("CRITICAL ERROR: WAREIQ_API_TOKEN is missing.");
-      return res.status(500).json({ error: 'Server Configuration Error' });
+      return res.status(500).json({ error: 'Server Error: WAREIQ_API_TOKEN is missing.' });
     }
   
     const { awb, orderId, mobile } = req.query;
     const searchTerm = awb || orderId;
-  
-    console.log(`Incoming Query - OrderID: ${orderId}, AWB: ${awb}, Mobile: ${mobile}`);
   
     if (!searchTerm) {
       return res.status(400).json({ error: 'Please provide either an Order ID or AWB Number.' });
     }
   
     try {
-      // 3. Construct Endpoint (Using V2 Search)
-      const endpoint = `${BASE_URL}/orders/v2/orders/b2c/all`;
-      console.log(`Requesting Endpoint: ${endpoint}`);
+      let response;
+      let endpoint;
   
-      // 4. Send Request
-      const startTime = Date.now();
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${API_TOKEN}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          search: {
-            order_details: searchTerm 
-          }
-        })
-      });
+      // ---------------------------------------------------------
+      // SCENARIO A: Search by Order ID (or Generic Search)
+      // Uses "Orders List V2" endpoint from PDF Page 47 
+      // ---------------------------------------------------------
+      if (orderId) {
+        endpoint = `${BASE_URL}/orders/v2/orders/b2c/all`;
+        
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${API_TOKEN}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            search: {
+              order_details: orderId // "Use this field to search on order ID or AWB" [cite: 1420]
+            }
+          })
+        });
+      } 
       
-      const duration = Date.now() - startTime;
-      console.log(`Request Duration: ${duration}ms`);
-      console.log(`Response Status: ${response.status} ${response.statusText}`);
-  
-      // 5. Handle Errors
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("API ERROR BODY:", errorText);
-        return res.status(500).json({ error: 'Failed to connect to WareIQ.', details: errorText });
+      // ---------------------------------------------------------
+      // SCENARIO B: Search by AWB
+      // Uses "Track an order" endpoint from PDF Page 58 
+      // ---------------------------------------------------------
+      else if (awb) {
+        endpoint = `${BASE_URL}/orders/v1/track/${awb}`;
+        
+        response = await fetch(endpoint, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${API_TOKEN}`,
+            'Content-Type': 'application/json'
+          }
+        });
       }
   
-      const jsonResponse = await response.json();
-      console.log("API Response Success. Data keys:", Object.keys(jsonResponse));
+      // ---------------------------------------------------------
+      // 3. Handle API Errors
+      // ---------------------------------------------------------
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`WareIQ Error (${response.status}) at ${endpoint}:`, errorText);
+        
+        if (response.status === 404) return res.status(404).json({ error: 'Shipment not found.' });
+        return res.status(500).json({ error: 'Failed to fetch data from WareIQ.' });
+      }
   
-      // 6. Extract Data
-      const orders = jsonResponse.data || [];
-      if (orders.length === 0) {
-        console.warn("Search successful but no orders found.");
+      const data = await response.json();
+      let orderData = null;
+  
+      // Handle different response structures
+      if (orderId) {
+        // V2 Search returns { data: [ ... ] } [cite: 1464]
+        const list = data.data || [];
+        orderData = list[0];
+      } else {
+        // V1 Track usually returns the object directly or in 'data'
+        orderData = data;
+      }
+  
+      if (!orderData) {
         return res.status(404).json({ error: 'Shipment not found.' });
       }
   
-      const orderData = orders[0];
-  
-      // 7. Security Check
+      // ---------------------------------------------------------
+      // 4. Security Check (Mobile Verification)
+      // ---------------------------------------------------------
       if (orderId) {
         if (!mobile) return res.status(400).json({ error: 'Mobile number required.' });
   
@@ -80,28 +102,23 @@ module.exports = async (req, res) => {
         const cleanInput = String(mobile).replace(/\D/g, '').slice(-10);
         const cleanActual = String(orderPhone).replace(/\D/g, '').slice(-10);
   
-        console.log(`Mobile Verify - Input: ...${cleanInput}, Actual: ...${cleanActual}`);
-  
         if (cleanInput !== cleanActual) {
-          console.warn("Security Block: Mobile number mismatch.");
           return res.status(404).json({ error: 'Mobile number mismatch.' });
         }
       }
   
-      // 8. Success
+      // ---------------------------------------------------------
+      // 5. Success
+      // ---------------------------------------------------------
       return res.status(200).json({
         order_id: orderData.unique_id || orderId,
-        current_status: orderData.status?.current_status || orderData.status || 'Unknown',
+        // Map status based on documentation fields [cite: 1826]
+        current_status: orderData.status?.current_status || orderData.status || 'Unknown', 
         history: orderData.tracking_history || []
       });
   
     } catch (error) {
-      // LOG THE EXACT CRASH REASON
-      console.error("--- SYSTEM CRASH ---");
-      console.error("Error Name:", error.name);
-      console.error("Error Message:", error.message);
-      if (error.cause) console.error("Error Cause:", error.cause);
-      
-      return res.status(500).json({ error: 'Tracking service unavailable.', debug: error.message });
+      console.error('System Crash:', error.message);
+      return res.status(500).json({ error: 'Tracking service unavailable (System Error).' });
     }
   };
