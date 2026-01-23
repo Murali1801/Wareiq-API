@@ -2,5 +2,6 @@
     "name": "armor-tracking-api",
     "version": "1.0.0",
     "main": "api/track-order.js",
+    "type": "module",
     "dependencies": {}
 }
