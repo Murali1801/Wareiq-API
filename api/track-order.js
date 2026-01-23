@@ -1,135 +1,70 @@
-module.exports = async (req, res) => {
-    // -------------------------------------------------
-    // 1. CORS
-    // -------------------------------------------------
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization'
-    );
-  
-    if (req.method === 'OPTIONS') return res.status(200).end();
-  
-    // -------------------------------------------------
-    // 2. Config (FIXED)
-    // -------------------------------------------------
-    const BASE_URL = process.env.WAREIQ_BASE_URL || 'https://webapp.wareiq.com';
-    const API_TOKEN = process.env.WAREIQ_API_TOKEN;
-  
-    if (!API_TOKEN) {
-      return res
-        .status(500)
-        .json({ error: 'WAREIQ_API_TOKEN is missing' });
+const axios = require('axios');
+
+export default async function handler(req, res) {
+  // 1. CORS Configuration (Allow Shopify to access this)
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  // Handle Preflight (Browser Check)
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  // 2. Extract Data from Query
+  const { awb, orderId, mobile } = req.query;
+
+  // 3. Environment Variables (Set these in Vercel Dashboard)
+  // The long string from your image goes here
+  const AUTH_HEADER = process.env.WAREIQ_AUTH_HEADER; 
+
+  if (!AUTH_HEADER) {
+    return res.status(500).json({ error: "Server Error: Missing API Credentials" });
+  }
+
+  try {
+    let apiUrl;
+
+    // 4. Determine which WareIQ Endpoint to hit
+    if (awb) {
+      // CASE A: Search by AWB
+      // URL format from your example: https://track.wareiq.com/tracking/v1/shipments/{AWB}/all
+      apiUrl = `https://track.wareiq.com/tracking/v1/shipments/${awb}/all`;
+    
+    } else if (orderId && mobile) {
+      // CASE B: Search by Order ID + Mobile
+      // TODO: If WareIQ has a different endpoint for Order ID lookup (e.g., /orders/), change this URL.
+      // For now, we attempt to use the Order ID in place of the shipment ID, or you might need a "lookup" step first.
+      apiUrl = `https://track.wareiq.com/tracking/v1/shipments/${orderId}/all`; 
+    } else {
+      return res.status(400).json({ error: "Missing required fields. Provide AWB or Order ID." });
     }
-  
-    const { awb, orderId, mobile } = req.query;
-  
-    if (!awb && !orderId) {
-      return res
-        .status(400)
-        .json({ error: 'Provide either AWB or Order ID' });
-    }
-  
-    try {
-      let awbNumber = awb;
-      let orderData = null;
-  
-      // -------------------------------------------------
-      // 3. If ORDER ID → Get AWB first
-      // -------------------------------------------------
-      if (orderId) {
-        if (!mobile) {
-          return res
-            .status(400)
-            .json({ error: 'Mobile number is required' });
-        }
-  
-        const orderSearchRes = await fetch(
-          `${BASE_URL}/orders/v2/orders/b2c/all`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${API_TOKEN}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              search: { order_details: orderId },
-              page: 1,
-              per_page: 1,
-            }),
-          }
-        );
-  
-        if (!orderSearchRes.ok) {
-          return res.status(404).json({ error: 'Order not found' });
-        }
-  
-        const orderSearchData = await orderSearchRes.json();
-        orderData = orderSearchData?.data?.[0];
-  
-        if (!orderData || !orderData.awb) {
-          return res
-            .status(404)
-            .json({ error: 'AWB not generated yet' });
-        }
-  
-        // Mobile verification
-        const orderPhone =
-          orderData.customer_details?.phone ||
-          orderData.shipping_address?.phone ||
-          '';
-  
-        const inputMobile = mobile.replace(/\D/g, '').slice(-10);
-        const actualMobile = orderPhone.replace(/\D/g, '').slice(-10);
-  
-        if (inputMobile !== actualMobile) {
-          return res
-            .status(403)
-            .json({ error: 'Mobile number mismatch' });
-        }
-  
-        awbNumber = orderData.awb;
+
+    // 5. Make the API Call to WareIQ
+    const response = await axios.get(apiUrl, {
+      headers: {
+        'Authorization': AUTH_HEADER, // This takes the value from your environment variable
+        'Content-Type': 'application/json'
       }
-  
-      // -------------------------------------------------
-      // 4. TRACK USING CORRECT ENDPOINT (FIXED)
-      // -------------------------------------------------
-      const trackRes = await fetch(
-        `${BASE_URL}/tracking/v1/shipments/${awbNumber}/wiq?details=true`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${API_TOKEN}`,
-          },
-        }
-      );
-  
-      if (!trackRes.ok) {
-        return res.status(404).json({ error: 'Tracking not found' });
-      }
-  
-      const trackingData = await trackRes.json();
-  
-      // -------------------------------------------------
-      // 5. RESPONSE (CLEAN FOR FRONTEND)
-      // -------------------------------------------------
-      return res.status(200).json({
-        order_id: orderData?.unique_id || null,
-        awb: awbNumber,
-        courier: trackingData.courier || null,
-        current_status: trackingData.tracking_status,
-        wareiq_status: trackingData.status,
-        location: trackingData.location,
-        event_time: trackingData.event_time,
-        tracking_url: trackingData.tracking_url,
-        history: trackingData.tracking_history || [],
-      });
-    } catch (err) {
-      console.error('Tracking Error:', err);
-      return res
-        .status(500)
-        .json({ error: 'Tracking service unavailable' });
+    });
+
+    // 6. Return Data to Frontend
+    // We send back exactly what WareIQ sends us
+    return res.status(200).json(response.data);
+
+  } catch (error) {
+    console.error("WareIQ API Error:", error.response?.data || error.message);
+    
+    // Handle 404 (Not Found) specifically
+    if (error.response?.status === 404) {
+      return res.status(404).json({ error: "Shipment not found. Please check your details." });
     }
-  };
-  
+
+    return res.status(500).json({ error: "Failed to fetch tracking details." });
+  }
+}
