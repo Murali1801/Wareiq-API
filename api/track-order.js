@@ -43,6 +43,17 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server Error: Configuration Missing" });
   }
 
+  // ---------------------------------------------------------
+  // VALIDATION: MUTUAL EXCLUSION (Either AWB OR OrderID/Mobile)
+  // ---------------------------------------------------------
+  // If AWB is present AND (OrderId OR Mobile) is present -> ERROR
+  if (awb && (orderId || mobile)) {
+      console.warn("Blocked request: Client sent both AWB and Order ID.");
+      return res.status(400).json({ 
+          error: "Invalid Request: Please provide EITHER an AWB OR an Order ID with Mobile. Do not provide all three." 
+      });
+  }
+
   try {
     let finalAwb = awb;
 
@@ -51,8 +62,7 @@ export default async function handler(req, res) {
     // ---------------------------------------------------------
     if (!finalAwb && orderId) {
         
-        // *** NEW SECURITY CHECK ***
-        // If Order ID is present, Mobile is now MANDATORY.
+        // Security Check: Mobile is MANDATORY for Order ID lookup
         if (!mobile) {
             console.warn(`Blocked request for Order ID ${orderId}: Missing Mobile Number.`);
             return res.status(400).json({ error: "Mobile number is required to track by Order ID." });
@@ -89,14 +99,13 @@ export default async function handler(req, res) {
 
         const order = searchData.data[0];
 
-        // *** STRICT MOBILE VERIFICATION ***
+        // Strict Mobile Verification
         const storedPhone = order.customer_details?.phone || "";
         console.log(`Verifying: Input(${mobile}) vs Stored(${storedPhone})`);
         
         const cleanStored = storedPhone.replace(/\D/g, ''); 
         const cleanInput = mobile.replace(/\D/g, ''); 
 
-        // Check if the stored number ends with the input number (handles +91 vs 0 vs plain)
         if (!cleanStored.endsWith(cleanInput)) {
             console.warn("Security Alert: Mobile number mismatch.");
             return res.status(400).json({ error: "Mobile number does not match this Order ID." });
