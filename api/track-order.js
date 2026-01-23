@@ -18,8 +18,8 @@ export default async function handler(req, res) {
   console.log("INCOMING REQUEST:", req.method);
   console.log("QUERY PARAMS:", JSON.stringify(req.query));
 
-  // 2. Extract Data (Robust Handling)
-  // FIX: Check all possible capitalizations for Order ID
+  // 2. Extract Data
+  // Handle case-insensitivity for orderId
   const orderId = req.query.orderId || req.query.order_id || req.query.orderid;
   const mobile = req.query.mobile;
   const awb = req.query.awb;
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     if (!finalAwb && orderId) {
         console.log(`STEP 1: Searching for Order ID: ${orderId}`);
         
-        // Note: Ensure this URL is correct. Usually it is api.wareiq.com for orders.
+        // UPDATED ENDPOINT based on your request
         const searchUrl = "https://track.wareiq.com/orders/v2/orders/b2c/all"; 
         
         const searchPayload = {
@@ -61,31 +61,42 @@ export default async function handler(req, res) {
         if (!searchResponse.ok) {
             const errText = await searchResponse.text();
             console.error(`Search API Failed (${searchResponse.status}):`, errText);
-            // If the fetch fails here, it might return a 404 or 500
             return res.status(searchResponse.status).json({ error: "Order search failed.", details: errText });
         }
 
         const searchData = await searchResponse.json();
-        console.log("Search Result:", JSON.stringify(searchData));
+        console.log("Search Result Matches Found:", searchData?.data?.length || 0);
 
         if (!searchData?.data?.length) {
             console.warn("Order ID not found in WareIQ.");
             return res.status(404).json({ error: "Order ID not found." });
         }
 
+        // Get the first matching order
         const order = searchData.data[0];
 
-        // Mobile Verification
+        // --- MOBILE VERIFICATION (UPDATED FOR YOUR JSON) ---
         if (mobile) {
-             const storedPhone = order.customer_phone || "";
-             console.log(`Verifying Phone: ${mobile} vs ${storedPhone}`);
-             if (!storedPhone.includes(mobile)) {
+             // Extract phone from nested object: "customer_details": { "phone": "..." }
+             const storedPhone = order.customer_details?.phone || "";
+             
+             console.log(`Verifying Phone: Input(${mobile}) vs Stored(${storedPhone})`);
+             
+             // Logic: Check if the stored phone ENDS with the user's input
+             // This handles cases like stored "098..." vs input "98..." or "+91..."
+             const cleanStored = storedPhone.replace(/\D/g, ''); // Remove non-digits
+             const cleanInput = mobile.replace(/\D/g, '');       // Remove non-digits
+
+             if (!cleanStored.endsWith(cleanInput)) {
+                 console.warn("Mobile mismatch.");
                  return res.status(400).json({ error: "Mobile number does not match this Order." });
              }
         }
 
-        finalAwb = order.awb; 
-        console.log(`Found AWB: ${finalAwb}`);
+        // --- AWB EXTRACTION (UPDATED FOR YOUR JSON) ---
+        // Extract AWB from nested object: "shipping_details": { "awb": "..." }
+        finalAwb = order.shipping_details?.awb; 
+        console.log(`Found AWB in Shipping Details: ${finalAwb}`);
 
         if (!finalAwb) {
              return res.status(400).json({ error: "Order confirmed but AWB not yet assigned." });
@@ -128,7 +139,6 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error("CRITICAL EXCEPTION:", error);
-    // This catches the 'fetch failed' error if the URL is unreachable
     return res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 }
