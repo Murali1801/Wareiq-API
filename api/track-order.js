@@ -1,13 +1,31 @@
 export default async function handler(req, res) {
-  // 1. CORS Configuration
+  // ---------------------------------------------------------
+  // 1. SECURITY: DYNAMIC CORS CONFIGURATION
+  // ---------------------------------------------------------
+  const allowedOrigins = [
+    'https://armor.shop', 
+    'https://staging.armor.shop',
+    'http://localhost:3000' // Keep localhost for your local testing
+  ];
+
+  const origin = req.headers.origin;
+
+  // If the request comes from an allowed origin, set the header to that origin
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    // Optional: If you want to block other domains completely, you can return here.
+    // For now, we just won't set the Allow-Origin header, which effectively blocks them in the browser.
+  }
+
   res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
   res.setHeader(
     'Access-Control-Allow-Headers',
     'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
   );
 
+  // Handle Preflight Options
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
@@ -16,6 +34,7 @@ export default async function handler(req, res) {
   // --- DEBUG LOGS ---
   console.log("------------------------------------------------");
   console.log("INCOMING REQUEST:", req.method);
+  console.log("ORIGIN:", origin); // Helpful to see who is calling
   console.log("QUERY PARAMS:", JSON.stringify(req.query));
 
   // 2. Extract Data
@@ -40,7 +59,6 @@ export default async function handler(req, res) {
     if (!finalAwb && orderId) {
         console.log(`STEP 1: Searching for Order ID: ${orderId}`);
         
-        // UPDATED ENDPOINT based on your request
         const searchUrl = "https://track.wareiq.com/orders/v2/orders/b2c/all"; 
         
         const searchPayload = {
@@ -72,20 +90,16 @@ export default async function handler(req, res) {
             return res.status(404).json({ error: "Order ID not found." });
         }
 
-        // Get the first matching order
         const order = searchData.data[0];
 
-        // --- MOBILE VERIFICATION (UPDATED FOR YOUR JSON) ---
+        // --- MOBILE VERIFICATION ---
         if (mobile) {
-             // Extract phone from nested object: "customer_details": { "phone": "..." }
              const storedPhone = order.customer_details?.phone || "";
-             
              console.log(`Verifying Phone: Input(${mobile}) vs Stored(${storedPhone})`);
              
-             // Logic: Check if the stored phone ENDS with the user's input
-             // This handles cases like stored "098..." vs input "98..." or "+91..."
-             const cleanStored = storedPhone.replace(/\D/g, ''); // Remove non-digits
-             const cleanInput = mobile.replace(/\D/g, '');       // Remove non-digits
+             // Normalize and check
+             const cleanStored = storedPhone.replace(/\D/g, ''); 
+             const cleanInput = mobile.replace(/\D/g, ''); 
 
              if (!cleanStored.endsWith(cleanInput)) {
                  console.warn("Mobile mismatch.");
@@ -93,10 +107,9 @@ export default async function handler(req, res) {
              }
         }
 
-        // --- AWB EXTRACTION (UPDATED FOR YOUR JSON) ---
-        // Extract AWB from nested object: "shipping_details": { "awb": "..." }
+        // --- AWB EXTRACTION ---
         finalAwb = order.shipping_details?.awb; 
-        console.log(`Found AWB in Shipping Details: ${finalAwb}`);
+        console.log(`Found AWB: ${finalAwb}`);
 
         if (!finalAwb) {
              return res.status(400).json({ error: "Order confirmed but AWB not yet assigned." });
