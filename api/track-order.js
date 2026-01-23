@@ -1,9 +1,5 @@
-// api/track-order.js
-
 export default async function handler(req, res) {
-  // ---------------------------------------------------------
-  // 1. CORS CONFIGURATION (Allows Shopify to talk to Vercel)
-  // ---------------------------------------------------------
+  // 1. CORS Configuration
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
@@ -12,41 +8,43 @@ export default async function handler(req, res) {
     'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
   );
 
-  // Handle Browser Preflight Request
+  // Handle Preflight
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  // ---------------------------------------------------------
-  // 2. INITIAL SETUP
-  // ---------------------------------------------------------
+  // --- DEBUG LOG: START ---
+  console.log("------------------------------------------------");
+  console.log("INCOMING REQUEST:", req.method);
+  console.log("QUERY PARAMS:", JSON.stringify(req.query));
+
+  // 2. Extract Data
   const { awb, orderId, mobile } = req.query;
-  
-  // Get API Credentials from Vercel Environment Variables
   const AUTH_HEADER = process.env.WAREIQ_AUTH_HEADER;
 
+  // --- DEBUG LOG: AUTH CHECK ---
   if (!AUTH_HEADER) {
-    return res.status(500).json({ error: "Server Configuration Error: Missing API Credentials." });
+    console.error("CRITICAL ERROR: WAREIQ_AUTH_HEADER is missing in Environment Variables.");
+    return res.status(500).json({ error: "Server Error: Configuration Missing" });
+  } else {
+    console.log("Auth Header is present.");
   }
 
   try {
     let finalAwb = awb;
 
     // ---------------------------------------------------------
-    // STEP 1: If we have Order ID but NO AWB, search for it first
+    // STEP 1: Search by Order ID (if AWB is missing)
     // ---------------------------------------------------------
     if (!finalAwb && orderId) {
+        console.log(`STEP 1: Searching for Order ID: ${orderId}`);
         
-        // DOCUMENTATION REFERENCE: Page 47 "POST Orders List V2"
-        // We use this endpoint to search for the order details using the Order ID.
         const searchUrl = "https://api.wareiq.com/orders/v2/orders/b2c/all"; 
         
         const searchPayload = {
-            "search": {
-                [cite_start]"order_details": orderId // Searches by Order ID or AWB [cite: 47]
-            },
-            "page": 1,
+            "search": { "order_details": orderId },
+            "page": 1, 
             "per_page": 1
         };
 
@@ -59,44 +57,48 @@ export default async function handler(req, res) {
             body: JSON.stringify(searchPayload)
         });
 
+        console.log(`WareIQ Search Status: ${searchResponse.status}`);
+
         if (!searchResponse.ok) {
-            console.error("Search API Error:", searchResponse.status, await searchResponse.text());
-            return res.status(404).json({ error: "Could not find order. Please check the Order ID." });
+            const errorText = await searchResponse.text();
+            console.error("WareIQ Search API Error Body:", errorText);
+            return res.status(404).json({ error: "Order lookup failed." });
         }
 
         const searchData = await searchResponse.json();
+        console.log("WareIQ Search Response Data:", JSON.stringify(searchData));
 
-        // Validate we got a result
-        if (!searchData || !searchData.data || searchData.data.length === 0) {
-            return res.status(404).json({ error: "Order ID not found in WareIQ system." });
+        if (!searchData?.data?.length) {
+            console.warn("Order ID not found in WareIQ database.");
+            return res.status(404).json({ error: "Order ID not found." });
         }
 
-        // Extract the order object
         const order = searchData.data[0];
+        console.log("Order Found. details:", JSON.stringify(order));
 
-        // OPTIONAL SECURITY: Verify Mobile Number if provided
-        [cite_start]// Note: 'customer_phone' is the standard field per docs [cite: 49]
+        // Optional Mobile Check
         if (mobile) {
-             const storedPhone = order.customer_phone || "";
-             // Simple check: does the stored phone end with the user's input?
-             if (!storedPhone.includes(mobile)) {
+             console.log(`Verifying Mobile: Input(${mobile}) vs Order(${order.customer_phone})`);
+             if (order.customer_phone && !order.customer_phone.includes(mobile)) {
+                 console.warn("Mobile verification failed.");
                  return res.status(400).json({ error: "Mobile number does not match this Order ID." });
              }
         }
 
-        // Get AWB from the search result
         finalAwb = order.awb; 
+        console.log(`Extracted AWB from Order: ${finalAwb}`);
 
         if (!finalAwb) {
-            return res.status(400).json({ error: "This order is confirmed but has not been assigned an AWB yet." });
+             console.warn("Order exists but has no AWB assigned.");
+             return res.status(400).json({ error: "Order confirmed but shipment not yet created (No AWB)." });
         }
     }
 
     // ---------------------------------------------------------
-    // STEP 2: Fetch Tracking Details using the AWB
+    // STEP 2: Track using AWB
     // ---------------------------------------------------------
     if (finalAwb) {
-        // DOCUMENTATION REFERENCE: Page 22 "GET Track an order"
+        console.log(`STEP 2: Tracking AWB: ${finalAwb}`);
         const trackUrl = `https://track.wareiq.com/tracking/v1/shipments/${finalAwb}/all`;
 
         const trackResponse = await fetch(trackUrl, {
@@ -107,18 +109,18 @@ export default async function handler(req, res) {
             }
         });
 
+        console.log(`WareIQ Track Status: ${trackResponse.status}`);
+
         if (!trackResponse.ok) {
-            // Handle 404 specifically for invalid AWBs
-            if (trackResponse.status === 404) {
-                return res.status(404).json({ error: "Tracking information not found for this shipment." });
-            }
-            throw new Error(`Tracking API responded with status ${trackResponse.status}`);
+            const errorText = await trackResponse.text();
+            console.error("Tracking API Error Body:", errorText);
+            return res.status(trackResponse.status).json({ error: "Tracking info not found." });
         }
 
         const trackingData = await trackResponse.json();
+        console.log("Tracking Data Received Success.");
         
-        // Inject the original Order ID into the response if WareIQ didn't return it
-        // This ensures your UI displays the Order ID the user typed in
+        // Ensure UI gets the Order ID back
         if (orderId && !trackingData.order_id) {
             trackingData.order_id = orderId;
         }
@@ -126,11 +128,11 @@ export default async function handler(req, res) {
         return res.status(200).json(trackingData);
     } 
     
-    // Fallback if neither AWB nor Order ID was provided
-    return res.status(400).json({ error: "Please provide either an AWB Number or an Order ID." });
+    console.warn("Request failed: No AWB and No Order ID provided.");
+    return res.status(400).json({ error: "Provide AWB or Order ID." });
 
   } catch (error) {
-    console.error("Middleware Error:", error.message);
-    return res.status(500).json({ error: "Internal Server Error. Please try again later." });
+    console.error("CRITICAL EXCEPTION:", error);
+    return res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 }
