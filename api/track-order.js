@@ -41,7 +41,7 @@ export default async function handler(req, res) {
         console.log(`STEP 1: Searching for Order ID: ${orderId}`);
         
         // Note: Ensure this URL is correct. Usually it is api.wareiq.com for orders.
-        const searchUrl = "https://api.wareiq.com/orders/v2/orders/b2c/all"; 
+        const searchUrl = "https://track.wareiq.com/orders/v2/orders/b2c/all"; 
         
         const searchPayload = {
             "search": { "order_details": orderId },
