@@ -60,9 +60,17 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: "Mobile number is required to track by Order ID." });
         }
 
+        // 2. *** NEW STRICT VALIDATION ***
+        // Must be exactly 10 digits and only numbers.
+        const mobileRegex = /^\d{10}$/;
+        if (!mobileRegex.test(mobile)) {
+             console.warn(`Blocked invalid mobile format: ${mobile}`);
+             return res.status(400).json({ error: "Mobile number must be exactly 10 digits (numbers only)." });
+        }
+
         console.log(`STEP 1: Searching for Order ID: ${orderId}`);
         
-        // 2. Call WareIQ Order Search API
+        // 3. Call WareIQ Order Search API
         const searchUrl = "https://track.wareiq.com/orders/v2/orders/b2c/all"; 
         
         const searchPayload = {
@@ -86,7 +94,6 @@ export default async function handler(req, res) {
 
         const searchData = await searchResponse.json();
         
-        // 3. check if Order Exists
         if (!searchData?.data?.length) {
             return res.status(404).json({ error: "Order ID not found." });
         }
@@ -98,16 +105,14 @@ export default async function handler(req, res) {
         // ---------------------------------------------------------
         const storedPhone = order.customer_details?.phone || "";
         
-        // Normalize numbers (remove spaces, dashes, country codes if needed)
-        // We check if the stored phone ENDS with the input phone.
-        // Example: Stored "09876543210" ends with Input "9876543210" -> MATCH
+        // Normalize stored phone (e.g., +919876543210 -> 09876543210 -> 9876543210)
         const cleanStored = storedPhone.replace(/\D/g, ''); 
-        const cleanInput = mobile.replace(/\D/g, ''); 
+        
+        // Since we already validated 'mobile' input is 10 digits, we just check if 
+        // the stored number ENDS with those 10 digits.
+        console.log(`Verifying Phone: Input(${mobile}) vs Stored(${cleanStored})`);
 
-        console.log(`Verifying Phone: Input(${cleanInput}) vs Stored(${cleanStored})`);
-
-        if (!cleanStored.endsWith(cleanInput)) {
-            // STOP HERE: The mobile number does not match.
+        if (!cleanStored.endsWith(mobile)) {
             console.warn(`Security Alert: Mobile mismatch for Order ${orderId}`);
             return res.status(400).json({ error: "Mobile number does not match this Order ID." });
         }
@@ -118,13 +123,12 @@ export default async function handler(req, res) {
         finalAwb = order.shipping_details?.awb; 
 
         if (!finalAwb) {
-             // Order matches, Mobile matches, but no AWB yet.
              return res.status(400).json({ error: "Order found, but no tracking number (AWB) assigned yet." });
         }
     }
 
     // ---------------------------------------------------------
-    // SCENARIO 2: TRACK BY AWB (Either provided directly or found above)
+    // SCENARIO 2: TRACK BY AWB
     // ---------------------------------------------------------
     if (finalAwb) {
         console.log(`STEP 2: Tracking AWB: ${finalAwb}`);
@@ -144,7 +148,6 @@ export default async function handler(req, res) {
 
         const trackingData = await trackResponse.json();
         
-        // Inject Order ID into response for UI consistency
         if (orderId && !trackingData.order_id) {
             trackingData.order_id = orderId;
         }
