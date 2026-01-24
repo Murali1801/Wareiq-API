@@ -26,12 +26,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  // --- DEBUG LOGS ---
-  console.log("------------------------------------------------");
-  console.log("INCOMING REQUEST:", req.method);
-  console.log("PARAMS:", JSON.stringify(req.query));
-
-  // 2. Extract Data
+  // ---------------------------------------------------------
+  // 2. EXTRACT & VALIDATE INPUTS
+  // ---------------------------------------------------------
   const orderId = req.query.orderId || req.query.order_id || req.query.orderid;
   const mobile = req.query.mobile;
   const awb = req.query.awb;
@@ -43,12 +40,8 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server Error: Configuration Missing" });
   }
 
-  // ---------------------------------------------------------
-  // VALIDATION: MUTUAL EXCLUSION (Either AWB OR OrderID/Mobile)
-  // ---------------------------------------------------------
-  // If AWB is present AND (OrderId OR Mobile) is present -> ERROR
+  // MUTUAL EXCLUSION CHECK
   if (awb && (orderId || mobile)) {
-      console.warn("Blocked request: Client sent both AWB and Order ID.");
       return res.status(400).json({ 
           error: "Invalid Request: Please provide EITHER an AWB OR an Order ID with Mobile. Do not provide all three." 
       });
@@ -58,18 +51,18 @@ export default async function handler(req, res) {
     let finalAwb = awb;
 
     // ---------------------------------------------------------
-    // STEP 1: Search by Order ID (Requires Mobile verification)
+    // SCENARIO 1: SEARCH BY ORDER ID (REQUIRES MOBILE VERIFICATION)
     // ---------------------------------------------------------
     if (!finalAwb && orderId) {
         
-        // Security Check: Mobile is MANDATORY for Order ID lookup
+        // 1. Enforce Mobile Presence
         if (!mobile) {
-            console.warn(`Blocked request for Order ID ${orderId}: Missing Mobile Number.`);
             return res.status(400).json({ error: "Mobile number is required to track by Order ID." });
         }
 
         console.log(`STEP 1: Searching for Order ID: ${orderId}`);
         
+        // 2. Call WareIQ Order Search API
         const searchUrl = "https://track.wareiq.com/orders/v2/orders/b2c/all"; 
         
         const searchPayload = {
@@ -93,33 +86,45 @@ export default async function handler(req, res) {
 
         const searchData = await searchResponse.json();
         
+        // 3. check if Order Exists
         if (!searchData?.data?.length) {
             return res.status(404).json({ error: "Order ID not found." });
         }
 
         const order = searchData.data[0];
 
-        // Strict Mobile Verification
+        // ---------------------------------------------------------
+        // CRITICAL STEP: MOBILE NUMBER VERIFICATION
+        // ---------------------------------------------------------
         const storedPhone = order.customer_details?.phone || "";
-        console.log(`Verifying: Input(${mobile}) vs Stored(${storedPhone})`);
         
+        // Normalize numbers (remove spaces, dashes, country codes if needed)
+        // We check if the stored phone ENDS with the input phone.
+        // Example: Stored "09876543210" ends with Input "9876543210" -> MATCH
         const cleanStored = storedPhone.replace(/\D/g, ''); 
         const cleanInput = mobile.replace(/\D/g, ''); 
 
+        console.log(`Verifying Phone: Input(${cleanInput}) vs Stored(${cleanStored})`);
+
         if (!cleanStored.endsWith(cleanInput)) {
-            console.warn("Security Alert: Mobile number mismatch.");
+            // STOP HERE: The mobile number does not match.
+            console.warn(`Security Alert: Mobile mismatch for Order ${orderId}`);
             return res.status(400).json({ error: "Mobile number does not match this Order ID." });
         }
 
+        // ---------------------------------------------------------
+        // VALIDATION SUCCESS: EXTRACT AWB
+        // ---------------------------------------------------------
         finalAwb = order.shipping_details?.awb; 
 
         if (!finalAwb) {
+             // Order matches, Mobile matches, but no AWB yet.
              return res.status(400).json({ error: "Order found, but no tracking number (AWB) assigned yet." });
         }
     }
 
     // ---------------------------------------------------------
-    // STEP 2: Track using AWB
+    // SCENARIO 2: TRACK BY AWB (Either provided directly or found above)
     // ---------------------------------------------------------
     if (finalAwb) {
         console.log(`STEP 2: Tracking AWB: ${finalAwb}`);
@@ -139,7 +144,7 @@ export default async function handler(req, res) {
 
         const trackingData = await trackResponse.json();
         
-        // Pass back the Order ID for the UI
+        // Inject Order ID into response for UI consistency
         if (orderId && !trackingData.order_id) {
             trackingData.order_id = orderId;
         }
@@ -147,7 +152,7 @@ export default async function handler(req, res) {
         return res.status(200).json(trackingData);
     } 
     
-    return res.status(400).json({ error: "Please provide an AWB Number or Order ID with Mobile Number." });
+    return res.status(400).json({ error: "Please provide valid tracking details." });
 
   } catch (error) {
     console.error("CRITICAL EXCEPTION:", error);
