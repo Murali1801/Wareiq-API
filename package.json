@@ -5,12 +5,12 @@
     "main": "api/track-order.js",
     "type": "module",
     "scripts": {
-      "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "echo \"Error: no test specified\" && exit 1"
     },
     "keywords": [],
     "author": "",
     "license": "ISC",
     "dependencies": {
-      "firebase": "^10.7.1"
+        "firebase": "^12.8.0"
     }
-  }
+}
