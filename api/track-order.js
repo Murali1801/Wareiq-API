@@ -1,6 +1,6 @@
 // 1. IMPORTS
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
 import crypto from 'crypto'; 
 
 // 2. FIREBASE INIT
@@ -14,87 +14,123 @@ const firebaseConfig = {
   measurementId: process.env.FIREBASE_MEASUREMENT_ID
 };
 
-// Initialize only if keys exist
 let db;
 if (process.env.FIREBASE_API_KEY) {
     const app = initializeApp(firebaseConfig);
     db = getFirestore(app);
 } else {
-    console.warn("LOGGING WARNING: Firebase Config missing in Environment Variables.");
+    console.warn("LOGGING WARNING: Firebase Config missing.");
 }
 
-// Helper: Anonymize User
+// Helper: Anonymize User (Privacy Preserving)
 const getAnonymousUserId = (ip, userAgent) => {
-    return crypto.createHash('sha256').update(`${ip}-${userAgent}`).digest('hex').substring(0, 12);
+    return crypto.createHash('sha256').update(`${ip}-${userAgent}`).digest('hex').substring(0, 16);
 };
 
-// Helper: Async Logger (Logs to BOTH Console & Firebase)
+// Helper: Smart Logger with Transaction
 async function logSearchEvent(req, searchType, searchValue, status, errorMsg = null) {
-    // 1. Extract Details
+    // 1. Prepare Data
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
     const userAgent = req.headers['user-agent'] || 'unknown';
     const city = req.headers['x-vercel-ip-city'] || 'Unknown City';
     const country = req.headers['x-vercel-ip-country'] || 'Unknown Country';
     const isMobile = /mobile/i.test(userAgent);
-    
-    // 2. Prepare Data Object
+    const userId = getAnonymousUserId(ip, userAgent);
+
+    // Console Log (System Fallback)
+    console.log(`[LOG] ${status.toUpperCase()} | ${searchType} | ${searchValue} | User: ${userId}`);
+
+    if (!db) return;
+
+    // 2. REFERENCES
+    const statsRef = doc(db, "analytics", "main_stats"); // The Counter
+    const userRef = doc(db, "users", userId); // Unique User Record
+    const logRef = doc(collection(db, "tracking_logs")); // Detailed History Entry
+
     const logData = {
-        timestamp: new Date().toISOString(), // Readable string for Console
         event_type: "track_search",
-        anonymous_user_id: getAnonymousUserId(ip, userAgent),
-        search_type: searchType, 
+        anonymous_user_id: userId,
+        search_type: searchType,
         search_value: searchValue,
-        status: status, 
+        status: status,
         error_details: errorMsg,
         device_info: { is_mobile: isMobile, user_agent_raw: userAgent },
         location: { city: decodeURIComponent(city), country: country }
     };
 
-    // 3. LOG TO VERCEL CONSOLE (System Logs)
-    console.log(`[LOG] ${status.toUpperCase()} | Type: ${searchType} | Val: ${searchValue} | IP: ${ip} | Msg: ${errorMsg || 'OK'}`);
+    try {
+        // 3. TRANSACTION (Updates Counts & Logs Atomically)
+        await runTransaction(db, async (transaction) => {
+            const statsDoc = await transaction.get(statsRef);
+            const userDoc = await transaction.get(userRef);
 
-    // 4. LOG TO FIREBASE (Database)
-    if (db) {
-        try {
-            // Convert timestamp to serverTimestamp for Firestore consistency
-            const firestoreData = { ...logData, timestamp: serverTimestamp() };
-            await addDoc(collection(db, "tracking_logs"), firestoreData);
-        } catch (e) {
-            console.error("FIREBASE ERROR: Could not write to DB", e.message);
-        }
+            let totalClicks = 0;
+            let uniqueUsers = 0;
+
+            if (statsDoc.exists()) {
+                totalClicks = statsDoc.data().total_clicks || 0;
+                uniqueUsers = statsDoc.data().unique_users || 0;
+            }
+
+            // Logic: Always increment total. Only increment unique if user is new.
+            totalClicks++;
+            if (!userDoc.exists()) {
+                uniqueUsers++;
+            }
+
+            // A. Update Global Stats
+            transaction.set(statsRef, {
+                total_clicks: totalClicks,
+                unique_users: uniqueUsers,
+                last_activity: serverTimestamp()
+            }, { merge: true });
+
+            // B. Update Unique User Profile
+            if (!userDoc.exists()) {
+                transaction.set(userRef, {
+                    first_seen: serverTimestamp(),
+                    last_seen: serverTimestamp(),
+                    visit_count: 1,
+                    latest_location: logData.location,
+                    device: logData.device_info
+                });
+            } else {
+                transaction.update(userRef, {
+                    last_seen: serverTimestamp(),
+                    visit_count: (userDoc.data().visit_count || 0) + 1,
+                    latest_location: logData.location
+                });
+            }
+
+            // C. Add Detailed Log
+            transaction.set(logRef, {
+                ...logData,
+                timestamp: serverTimestamp()
+            });
+        });
+    } catch (e) {
+        console.error("FIREBASE TRANSACTION ERROR:", e.message);
     }
 }
 
 export default async function handler(req, res) {
-  // ---------------------------------------------------------
-  // 1. CORS & SECURITY
-  // ---------------------------------------------------------
-  const allowedOrigins = [
-    'https://armor.shop', 
-    'https://staging.armor.shop',
-    'http://localhost:3000'
-  ];
-
+  // CORS & Security Headers
+  const allowedOrigins = ['https://armor.shop', 'https://staging.armor.shop', 'http://localhost:3000'];
   const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-
+  if (allowedOrigins.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
+  
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
   res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
   
-  // Disable Caching (Fixes 304 issue)
+  // Disable Caching
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
-  // ---------------------------------------------------------
-  // 2. INPUT EXTRACTION (WHATWG URL API FIX)
-  // ---------------------------------------------------------
-  // Use "new URL" to avoid DeprecationWarning: url.parse()
+  // Extract Inputs
   const protocol = req.headers['x-forwarded-proto'] || 'http';
   const host = req.headers.host;
   const currentUrl = new URL(req.url, `${protocol}://${host}`);
@@ -102,7 +138,6 @@ export default async function handler(req, res) {
   const orderId = currentUrl.searchParams.get('orderId') || currentUrl.searchParams.get('order_id') || currentUrl.searchParams.get('orderid');
   const mobile = currentUrl.searchParams.get('mobile');
   const awb = currentUrl.searchParams.get('awb');
-
   const AUTH_HEADER = process.env.WAREIQ_AUTH_HEADER;
 
   if (!AUTH_HEADER) {
@@ -119,11 +154,8 @@ export default async function handler(req, res) {
   try {
     let finalAwb = awb;
 
-    // ---------------------------------------------------------
     // SCENARIO 1: SEARCH BY ORDER ID
-    // ---------------------------------------------------------
     if (!finalAwb && orderId) {
-        // Validation Checks
         if (!mobile) {
             await logSearchEvent(req, "ORDER_ID", orderId, "failed", "Missing Mobile");
             return res.status(400).json({ error: "Mobile number is required." });
@@ -155,9 +187,8 @@ export default async function handler(req, res) {
         }
 
         const order = searchData.data[0];
-
-        // Mobile Verification
         const cleanStored = (order.customer_details?.phone || "").replace(/\D/g, ''); 
+        
         if (!cleanStored.endsWith(mobile)) {
             await logSearchEvent(req, "ORDER_ID", orderId, "failed", "Mobile Mismatch");
             return res.status(400).json({ error: "Mobile number does not match this Order ID." });
@@ -165,7 +196,6 @@ export default async function handler(req, res) {
 
         finalAwb = order.shipping_details?.awb;
 
-        // Pending (No AWB) Logic
         if (!finalAwb) {
              await logSearchEvent(req, "ORDER_ID", orderId, "pending", "Confirmed, No AWB");
              return res.status(200).json({ 
@@ -177,9 +207,7 @@ export default async function handler(req, res) {
         }
     }
 
-    // ---------------------------------------------------------
     // SCENARIO 2: TRACK BY AWB
-    // ---------------------------------------------------------
     if (finalAwb) {
         const trackUrl = `https://track.wareiq.com/tracking/v1/shipments/${finalAwb}/all`;
         const trackResponse = await fetch(trackUrl, {
@@ -195,9 +223,7 @@ export default async function handler(req, res) {
         const trackingData = await trackResponse.json();
         if (orderId && !trackingData.order_id) trackingData.order_id = orderId;
 
-        // Log Success
         await logSearchEvent(req, orderId ? "ORDER_ID" : "AWB", orderId || finalAwb, "success");
-
         return res.status(200).json(trackingData);
     } 
     
