@@ -1,7 +1,16 @@
 {
-    "name": "armor-tracking-api",
+    "name": "armor-track-order-api",
     "version": "1.0.0",
+    "description": "Tracking API for Armor Shop",
     "main": "api/track-order.js",
     "type": "module",
-    "dependencies": {}
+    "scripts": {
+      "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+      "firebase": "^10.7.1"
+    }
   }
